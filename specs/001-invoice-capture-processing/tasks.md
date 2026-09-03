@@ -35,7 +35,7 @@ tested after the shared foundation is complete.
 
 - [ ] T001 Create the backend package and test directory skeleton in `backend/src/trade_document_automation/` and `backend/tests/`
 - [ ] T002 Configure the root Python project, test paths, Ruff, and mypy in `pyproject.toml`
-- [ ] T003 [P] Initialize the minimal React, TypeScript, and Vite frontend configuration in `frontend/package.json`, `frontend/tsconfig.json`, and `frontend/vite.config.ts`
+- [X] T003 [P] Initialize the minimal React, TypeScript, and Vite frontend configuration in `frontend/package.json`, `frontend/tsconfig.json`, and `frontend/vite.config.ts`
 - [ ] T004 [P] Add safe local configuration examples and ignore rules in `.env.example` and `.gitignore`
 - [ ] T005 Review and lock the shared submission contract in `specs/001-invoice-capture-processing/contracts/submissions-api.md`
 - [ ] T006 Add architecture-boundary guidance for contributors in `docs/adr/0001-feature-001-hexagonal-processing-boundaries.md`
