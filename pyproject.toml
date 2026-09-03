@@ -18,3 +18,20 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.5",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend/src"]
+
+[tool.ruff]
+target-version = "py312"
+src = ["backend/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["backend/src"]
+mypy_path = ["backend/src"]
+strict = true
