@@ -1,14 +1,20 @@
 # Submission API Contract
 
-**Status**: Shared contract for Feature 001. Stabilize this document before frontend/backend work
-is split into separate worktrees.
+**Status**: Locked for Feature 001. This is the shared frontend/backend contract; any change to
+endpoints, field names, outcome values, validation codes, or HTTP behavior requires coordinated,
+single-owner review before implementation work is split into separate worktrees.
 
 **Base path**: `/v1`
 
 ## Common types
 
-`outcome` is one of `approved`, `review_required`, or `processing_failed`.
-`state` is `processing` or `completed`. `outcome` is absent while state is `processing`.
+`submission_id` is an opaque, server-generated identifier. Clients must treat it as an uninterpreted
+string and use it only in the supplied `status_url` and retry path; it contains no invoice content,
+user identity, timestamp guarantee, or provider identifier.
+
+`state` is one of `processing` or `completed`. `outcome` is absent while `state` is `processing`.
+For `completed`, `outcome` is exactly one of `approved`, `review_required`, or
+`processing_failed`.
 
 Every safe error has this shape:
 
@@ -17,24 +23,33 @@ Every safe error has this shape:
   "error": {
     "code": "upload_validation_failed",
     "message": "One or more images cannot be accepted.",
-    "details": [{"file": "invoice.heic", "code": "file_too_large", "message": "Maximum size is 10 MiB."}]
+    "details": [{"file_index": 0, "code": "file_too_large", "message": "Maximum size is 10 MiB."}]
   },
   "request_id": "opaque-request-id"
 }
 ```
 
-`details` is optional. Messages and codes never contain stack traces, provider exception text, raw
-invoice text, or image bytes.
+`details` is optional. A detail identifies a multipart file by zero-based `file_index`, never by
+filename or image content. Messages and codes never contain stack traces, provider exception text,
+raw invoice text, image bytes, secrets, or internal storage details.
+
+`ValidationFinding` has `code`, `field` (a documented field name or `null` for a pipeline
+condition), `reason`, and `condition`. `condition` is one of `trusted`, `missing`, `ambiguous`,
+`low_confidence`, `inconsistent`, or `technical_failure`.
 
 ## Create submission
 
 `POST /v1/submissions`
 
-Content type: `multipart/form-data`; one or more parts named `files`.
+Content type: `multipart/form-data`; one or more file parts named `files`, in client-selected order.
+There is no Feature 001 count limit. All supplied images form one commercial-invoice submission.
 
-Each file must be a non-empty JPEG, PNG, or HEIC image, no larger than 10 MiB. The service checks
-filename extension, supplied content type, and detected byte signature/content type. A whole
-submission is rejected if any supplied file fails validation; extraction does not start.
+Each file must be non-empty and no larger than 10 MiB (10 × 1024 × 1024 bytes). Accepted formats
+are JPEG (`.jpg` or `.jpeg`, `image/jpeg`), PNG (`.png`, `image/png`), and HEIC (`.heic`,
+`image/heic`). The service checks filename extension, declared part content type, and detected byte
+signature/content type. All three signals must identify the same accepted format. A whole
+submission is rejected if any supplied file fails validation; no images are stored for processing
+and extraction does not start.
 
 ### Accepted response — `202 Accepted`
 
@@ -50,10 +65,11 @@ submission is rejected if any supplied file fails validation; extraction does no
 
 | Status | `error.code` | Meaning |
 | --- | --- | --- |
+| 415 | `invalid_request_content_type` | The request is not `multipart/form-data`. |
 | 400 | `missing_files` | No image files were supplied. |
 | 413 | `file_too_large` | At least one image exceeds 10 MiB. |
-| 415 | `unsupported_media_type` | Extension, declared MIME type, or detected type is not JPEG/PNG/HEIC. |
-| 422 | `upload_validation_failed` | File is empty or accepted type signals do not agree. |
+| 415 | `unsupported_image_type` | At least one extension, declared MIME type, or detected type is not an accepted image format. |
+| 422 | `upload_validation_failed` | A file is empty or its accepted type signals do not agree. |
 
 These are file-acceptance outcomes, not `processing_failed` results.
 
@@ -85,7 +101,10 @@ These are file-acceptance outcomes, not `processing_failed` results.
     "buyer": {"value": null, "condition": "missing"},
     "currency": {"value": "EUR", "condition": "trusted"},
     "invoice_total": {"value": "120.00", "condition": "trusted"},
-    "line_items": []
+    "line_items": [
+      {"quantity": "2", "unit_price": "60.00", "line_total": "120.00", "condition": "trusted"}
+    ],
+    "shipment_reference": {"value": null, "condition": "missing"}
   },
   "findings": [
     {"code": "required_field_missing", "field": "buyer", "reason": "Buyer/importer is required for approval.", "condition": "missing"}
@@ -94,10 +113,18 @@ These are file-acceptance outcomes, not `processing_failed` results.
 }
 ```
 
-For `approved`, `findings` is empty and `next_actions` is empty. For `processing_failed`, the
-response contains a safe pipeline failure finding and `next_actions` includes `retry_submission`
-and `replace_images`. `extracted_invoice` is omitted when extraction produced no safe structured
-data. Values shown are synthetic examples only.
+`extracted_invoice` is the safe structured summary. It has `invoice_number`, `invoice_date`,
+`seller`, `buyer`, `currency`, `invoice_total`, `line_items`, and optional
+`shipment_reference`. Every scalar field is a `{ "value": string | null, "condition": ... }`
+object. Every line item contains available normalized numeric values and its condition; descriptions
+and raw source text are not returned. Values shown are synthetic examples only.
+
+For `approved`, `findings` and `next_actions` are empty. For `review_required`, `findings` includes
+the affected field or rule, safe reason, and reliability/consistency condition; `next_actions` is
+`["human_review"]`. For `processing_failed`, `findings` contains a safe pipeline finding with
+`field: null` and `condition: "technical_failure"`; `next_actions` is
+`["retry_submission", "replace_images"]`. `extracted_invoice` is omitted only when no safe
+structured extraction data exists.
 
 ### Retrieval errors
 
@@ -111,12 +138,23 @@ data. Values shown are synthetic examples only.
 `POST /v1/submissions/{submission_id}/retry`
 
 Retries the temporarily retained accepted images for a completed `processing_failed` submission.
-It returns the same `202 Accepted` processing response and retains the same submission reference.
+It requires no request body, creates a new processing attempt for the same `submission_id`, and
+returns the same `202 Accepted` processing response. It never changes an approved or
+review-required submission. Replacement images always use a new `POST /v1/submissions` request and
+therefore receive a new opaque submission identifier.
 
 | Status | `error.code` | Meaning |
 | --- | --- | --- |
-| 409 | `retry_not_allowed` | Submission is processing or did not finish as `processing_failed`. |
+| 409 | `retry_not_allowed` | Submission is processing, approved, or review-required. |
 | 404 | `submission_not_found` | The reference or temporary images are unavailable. |
 
-To replace images, the client starts a new `POST /v1/submissions` request; it does not alter a
-completed submission.
+## Contract invariants
+
+- Upload-validation errors are HTTP errors and never create a processing outcome.
+- Every accepted submission reaches exactly one final outcome per processing attempt.
+- `review_required` is a completed, reviewable business-validation result; it is not a technical
+  failure.
+- `processing_failed` means a technical pipeline step could not reliably complete; it is never
+  used for a reviewable business-rule finding.
+- Clients poll the supplied `status_url` after a `202` response and may use the same reference
+  after reconnecting while temporary Feature 001 state remains available.
