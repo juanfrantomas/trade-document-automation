@@ -27,6 +27,9 @@ htmlcov/
 *.db
 data/
 uploads/
+tmp/
+temp/
+*.tmp
 
 # Logs
 *.log
@@ -38,6 +41,9 @@ dist/
 build/
 .next/
 coverage/
+.vite/
+playwright-report/
+test-results/
 
 # Editores y sistema operativo
 .vscode/
